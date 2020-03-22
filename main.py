@@ -10,8 +10,19 @@ exactly the same, mark it on the image. Later, use a BLAST-like approach
 to find the whole area from a seed-area'''
 
 from PIL import Image, ImageDraw
-from collections import defaultdict
+from collections import defaultdict, Counter
 import random
+from scipy.stats import entropy
+import sys
+
+class Chunk():
+    """This class stores the overlapping blocks as one chunk, replacing the older block-structure"""
+    def __init__(self, block):
+        self.blocks = [block]
+        self.x1 = block.x1
+        self.y1 = block.y1
+        self.x2 = block.x2
+        self.y2 = block.y2
 
 class Block():
     """
@@ -19,6 +30,7 @@ The Block-class is the most important class of this script. It saves the
 information of the pixels as a "hash" and stores the coordinates of the block on 
 the picture.the hashes are later used to determine equal content among the blocks
     """
+
     def __init__(self,image,x1,y1,x2,y2):
         self.image = image
         self.x1 = x1
@@ -26,17 +38,33 @@ the picture.the hashes are later used to determine equal content among the block
         self.y1 = y1
         self.y2 = y2
         self.crop = image.crop((x1,y1,x2,y2))
-        self.hash =  self.get_hash()
+        self.entropy = self.get_entropy()
+        self.assigned_to_chunk = False
+        global window
+        global slide
         
-    def get_hash(self):
-        hash = ""
+    def get_entropy(self):
+        """This calculates the shannon-entropy of the pixel values in the picture to filter out the
+        most noisy chunks. Most evenly distributed colors mean heigh shannon entropy"""
+        pix_values = []
         px = self.crop.load()
-        width, height = self.crop.size
+        width, height = window, window
         for i in range(width):
             for j in range(height):
-                hash = hash + "".join([str(x) for x in px[i,j]])
-        return hash
-    
+                pix_values.append("".join([str(x) for x in px[i,j]]))
+        length = len(pix_values)
+        count = Counter(pix_values)
+        for key in count:
+            count[key] = count[key]/length
+        return entropy(list(count.values()))
+        
+    def get_coords_within(self):
+        coords = []
+        for i in range(self.x1,self.x1+window-slide, slide):
+            for j in range(self.y1,self.y1+window-slide,slide):
+                coords.append((i,j))
+        return coords
+        
     def check_intercept(self, block):
         """This method is later used to get the network of blocks... For now it is not used
         any further"""
@@ -48,35 +76,59 @@ the picture.the hashes are later used to determine equal content among the block
                 return True
         return False
 
+    
 """Main"""
+#global variables
 
-blocklist = defaultdict(list)
-im = Image.open("example3.jpeg")
-window = 20
+blocklist = []
+coord_block_dict = {}
+window = 15
+slide = 5
+thresh = 3
 
+#open the image
+im = Image.open(sys.argv[1])
+
+#For the status window
 m = 0
-for x in range(0,im.size[0]-window,5):
-    for y in range(0,im.size[1]-window,5):
+for x in range(0,im.size[0]-window,slide):
+    for y in range(0,im.size[1]-window,slide):
         m+=1
-        
+
+#The analysis
 n = 0
-for x in range(0,im.size[0]-window,5):
-    for y in range(0,im.size[1]-window,5):
+for x in range(0,im.size[0]-window,slide):
+    for y in range(0,im.size[1]-window,slide):
         n+=1
         print(n,"/",m, end = "\r")
+        #create a subimage
         block = Block(im, x,y,x+window,y+window)
-        blocklist[block.hash].append(block)
+        if(block.entropy > thresh):
+            #save the block
+            blocklist.append(block)
+            coord_block_dict[(block.x1,block.y1)]=block
 
-to_draw = {}
-for hash in blocklist:
-    if(len(blocklist[hash])>1):
-        to_draw[hash] = blocklist[hash]
+#Now find Chunks
+chunklist = []
+for block in blocklist:
+    if(block.assigned_to_chunk == False):
+        chunk = Chunk(block)
+        for coords in block.get_coords_within():
+            try:
+                chunk.blocks.append(coord_block_dict[coords])
+                coord_block_dict[coords].assigned_to_chunk = True
+            except KeyError:
+                pass
+    chunklist.append(chunk)
+print("")
+print(len(blocklist))
+print(len(chunklist))
 
+#Draw the clusters
 draw = ImageDraw.Draw(im)
-for hash in to_draw:
+for blk in blocklist:
     col = (random.randint(0,255), random.randint(0,255), random.randint(0,255))
-    for block in to_draw[hash]:
-        draw.rectangle((block.x1,block.y1,block.x2,block.y2), fill=None, outline=col)
+    draw.rectangle((blk.x1,blk.y1,blk.x2,blk.y2), fill=None, outline=col)
 
-im.save("example4.jpeg")
+im.save(f"done_{sys.argv[1]}")
 
